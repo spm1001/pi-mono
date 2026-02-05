@@ -79,6 +79,7 @@ export class Markdown implements Component {
 	}
 
 	setText(text: string): void {
+		if (text === this.text) return;
 		this.text = text;
 		this.invalidate();
 	}
