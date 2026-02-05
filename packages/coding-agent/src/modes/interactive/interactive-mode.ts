@@ -2119,6 +2119,7 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
+					this.streamingComponent.finalise();
 					this.streamingComponent.updateContent(this.streamingMessage);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
@@ -2413,6 +2414,7 @@ export class InteractiveMode {
 					this.hideThinkingBlock,
 					this.getMarkdownThemeWithSettings(),
 				);
+				assistantComponent.finalise(); // historical message — render in full
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
