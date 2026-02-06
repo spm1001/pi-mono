@@ -7,8 +7,11 @@ import {
 	type AssistantMessage,
 	type Context,
 	EventStream,
+	endTrace,
+	startTrace,
 	streamSimple,
 	type ToolResultMessage,
+	tracePhase,
 	validateToolArguments,
 } from "@mariozechner/pi-ai";
 import type {
@@ -208,18 +211,26 @@ async function streamAssistantResponse(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	streamFn?: StreamFn,
 ): Promise<AssistantMessage> {
+	startTrace();
+
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
-		const transformStart = performance.now();
+		const t0 = performance.now();
 		messages = await config.transformContext(messages, signal);
-		stream.push({ type: "timing", label: "context_transform", ms: performance.now() - transformStart });
+		tracePhase("transformContext", t0);
+		stream.push({ type: "timing", label: "context_transform", ms: performance.now() - t0 });
 	}
 
-	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const convertStart = performance.now();
-	const llmMessages = await config.convertToLlm(messages);
-	stream.push({ type: "timing", label: "convert_to_llm", ms: performance.now() - convertStart });
+	// Convert messages and resolve API key in parallel (they're independent)
+	const streamFunction = streamFn || streamSimple;
+	const t1 = performance.now();
+	const apiKeyPromise = config.getApiKey
+		? Promise.resolve(config.getApiKey(config.model.provider)).then((key) => key || config.apiKey)
+		: Promise.resolve(config.apiKey);
+	const [llmMessages, resolvedApiKey] = await Promise.all([config.convertToLlm(messages), apiKeyPromise]);
+	tracePhase("convertToLlm", t1);
+	stream.push({ type: "timing", label: "convert_to_llm", ms: performance.now() - t1 });
 
 	// Build LLM context
 	const llmContext: Context = {
@@ -228,14 +239,8 @@ async function streamAssistantResponse(
 		tools: context.tools,
 	};
 
-	const streamFunction = streamFn || streamSimple;
-
-	// Resolve API key (important for expiring tokens)
-	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
-
 	// Record API call start time
-	const apiCallStart = performance.now();
+	const httpStart = performance.now();
 	stream.push({ type: "timing", label: "api_call_start", ms: 0 });
 
 	const response = await streamFunction(config.model, llmContext, {
@@ -252,8 +257,10 @@ async function streamAssistantResponse(
 		switch (event.type) {
 			case "start":
 				// Emit time-to-first-token on first streaming event
+				tracePhase("httpToFirstEvent", httpStart);
+				endTrace();
 				if (!ttftEmitted) {
-					stream.push({ type: "timing", label: "time_to_first_token", ms: performance.now() - apiCallStart });
+					stream.push({ type: "timing", label: "time_to_first_token", ms: performance.now() - httpStart });
 					ttftEmitted = true;
 				}
 				partialMessage = event.partial;
