@@ -91,17 +91,33 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				turnTimings.clear();
 			} else if (event.type === "timing") {
 				turnTimings.set(event.label, event.ms);
-			} else if (event.type === "turn_end" && turnTimings.size > 0) {
+			} else if (event.type === "turn_end") {
+				const parts: string[] = [];
+
+				// Timing stats
 				const ttft = turnTimings.get("time_to_first_token");
 				const apiEnd = turnTimings.get("api_call_end");
 				const convert = turnTimings.get("convert_to_llm");
 				const transform = turnTimings.get("context_transform");
 
-				const parts: string[] = [];
 				if (ttft !== undefined) parts.push(`ttft=${Math.round(ttft)}ms`);
 				if (apiEnd !== undefined) parts.push(`api=${Math.round(apiEnd)}ms`);
 				if (convert !== undefined && convert > 1) parts.push(`convert=${Math.round(convert)}ms`);
 				if (transform !== undefined && transform > 1) parts.push(`transform=${Math.round(transform)}ms`);
+
+				// Token usage stats (from assistant message)
+				if (event.message?.role === "assistant") {
+					const usage = (event.message as any).usage;
+					if (usage) {
+						const totalInput = usage.input + usage.cacheRead + usage.cacheWrite;
+						if (totalInput > 0) {
+							const cacheHitPct = ((usage.cacheRead / totalInput) * 100).toFixed(0);
+							parts.push(`in=${usage.input}`);
+							parts.push(`cache=${cacheHitPct}%`);
+							parts.push(`out=${usage.output}`);
+						}
+					}
+				}
 
 				if (parts.length > 0) {
 					console.error(`⏱ ${parts.join(", ")}`);

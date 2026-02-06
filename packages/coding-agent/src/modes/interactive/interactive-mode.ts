@@ -2312,17 +2312,34 @@ export class InteractiveMode {
 			}
 
 			case "turn_end": {
-				if (this.timingEnabled && this.turnTimings.size > 0) {
+				if (this.timingEnabled) {
+					const parts: string[] = [];
+
+					// Timing stats
 					const ttft = this.turnTimings.get("time_to_first_token");
 					const apiEnd = this.turnTimings.get("api_call_end");
 					const convert = this.turnTimings.get("convert_to_llm");
 					const transform = this.turnTimings.get("context_transform");
 
-					const parts: string[] = [];
 					if (ttft !== undefined) parts.push(`ttft=${Math.round(ttft)}ms`);
 					if (apiEnd !== undefined) parts.push(`api=${Math.round(apiEnd)}ms`);
 					if (convert !== undefined && convert > 1) parts.push(`convert=${Math.round(convert)}ms`);
 					if (transform !== undefined && transform > 1) parts.push(`transform=${Math.round(transform)}ms`);
+
+					// Token usage stats (from assistant message)
+					if (event.message.role === "assistant") {
+						const msg = event.message as AssistantMessage;
+						const usage = msg.usage;
+						if (usage) {
+							const totalInput = usage.input + usage.cacheRead + usage.cacheWrite;
+							if (totalInput > 0) {
+								const cacheHitPct = ((usage.cacheRead / totalInput) * 100).toFixed(0);
+								parts.push(`in=${usage.input}`);
+								parts.push(`cache=${cacheHitPct}%`);
+								parts.push(`out=${usage.output}`);
+							}
+						}
+					}
 
 					if (parts.length > 0) {
 						this.showStatus(`⏱ ${parts.join(", ")}`);
