@@ -28,6 +28,10 @@ if (!isBrowserExtension) {
 	}
 }
 
+// Cache compiled validators by tool name to avoid recompiling on every call.
+// ajv.compile() is expensive — schemas are static per tool, so we can cache safely.
+const validatorCache = new Map<string, any>();
+
 /**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
@@ -58,8 +62,12 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		return toolCall.arguments;
 	}
 
-	// Compile the schema
-	const validate = ajv.compile(tool.parameters);
+	// Use cached compiled validator, or compile and cache
+	let validate = validatorCache.get(tool.name);
+	if (!validate) {
+		validate = ajv.compile(tool.parameters);
+		validatorCache.set(tool.name, validate);
+	}
 
 	// Clone arguments so AJV can safely mutate for type coercion
 	const args = structuredClone(toolCall.arguments);

@@ -10,28 +10,74 @@ export function transformMessages<TApi extends Api>(
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
 ): Message[] {
-	// Build a map of original tool call IDs to normalized IDs
+	// Single-pass: transform messages AND insert synthetic tool results for orphaned calls.
+	// Combines what was previously two separate passes through the message array.
 	const toolCallIdMap = new Map<string, string>();
+	const result: Message[] = [];
+	let pendingToolCalls: ToolCall[] = [];
+	let existingToolResultIds = new Set<string>();
 
-	// First pass: transform messages (thinking blocks, tool call ID normalization)
-	const transformed = messages.map((msg) => {
-		// User messages pass through unchanged
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
+
 		if (msg.role === "user") {
-			return msg;
-		}
-
-		// Handle toolResult messages - normalize toolCallId if we have a mapping
-		if (msg.role === "toolResult") {
-			const normalizedId = toolCallIdMap.get(msg.toolCallId);
-			if (normalizedId && normalizedId !== msg.toolCallId) {
-				return { ...msg, toolCallId: normalizedId };
+			// User message interrupts tool flow - insert synthetic results for orphaned calls
+			if (pendingToolCalls.length > 0) {
+				for (const tc of pendingToolCalls) {
+					if (!existingToolResultIds.has(tc.id)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tc.id,
+							toolName: tc.name,
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCalls = [];
+				existingToolResultIds = new Set();
 			}
-			return msg;
+			result.push(msg);
+			continue;
 		}
 
-		// Assistant messages need transformation check
+		if (msg.role === "toolResult") {
+			// Normalize toolCallId if we have a mapping from assistant transform
+			const normalizedId = toolCallIdMap.get(msg.toolCallId);
+			const transformed =
+				normalizedId && normalizedId !== msg.toolCallId ? { ...msg, toolCallId: normalizedId } : msg;
+			existingToolResultIds.add(transformed.toolCallId);
+			result.push(transformed);
+			continue;
+		}
+
 		if (msg.role === "assistant") {
+			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
+			if (pendingToolCalls.length > 0) {
+				for (const tc of pendingToolCalls) {
+					if (!existingToolResultIds.has(tc.id)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tc.id,
+							toolName: tc.name,
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCalls = [];
+				existingToolResultIds = new Set();
+			}
+
 			const assistantMsg = msg as AssistantMessage;
+
+			// Skip errored/aborted assistant messages entirely.
+			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				continue;
+			}
+
 			const isSameModel =
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api &&
@@ -39,10 +85,7 @@ export function transformMessages<TApi extends Api>(
 
 			const transformedContent = assistantMsg.content.flatMap((block) => {
 				if (block.type === "thinking") {
-					// For same model: keep thinking blocks with signatures (needed for replay)
-					// even if the thinking text is empty (OpenAI encrypted reasoning)
 					if (isSameModel && block.thinkingSignature) return block;
-					// Skip empty thinking blocks, convert others to plain text
 					if (!block.thinking || block.thinking.trim() === "") return [];
 					if (isSameModel) return block;
 					return {
@@ -82,85 +125,24 @@ export function transformMessages<TApi extends Api>(
 				return block;
 			});
 
-			return {
+			const transformed = {
 				...assistantMsg,
 				content: transformedContent,
 			};
-		}
-		return msg;
-	});
-
-	// Second pass: insert synthetic empty tool results for orphaned tool calls
-	// This preserves thinking signatures and satisfies API requirements
-	const result: Message[] = [];
-	let pendingToolCalls: ToolCall[] = [];
-	let existingToolResultIds = new Set<string>();
-
-	for (let i = 0; i < transformed.length; i++) {
-		const msg = transformed[i];
-
-		if (msg.role === "assistant") {
-			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
-			if (pendingToolCalls.length > 0) {
-				for (const tc of pendingToolCalls) {
-					if (!existingToolResultIds.has(tc.id)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tc.id,
-							toolName: tc.name,
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-					}
-				}
-				pendingToolCalls = [];
-				existingToolResultIds = new Set();
-			}
-
-			// Skip errored/aborted assistant messages entirely.
-			// These are incomplete turns that shouldn't be replayed:
-			// - May have partial content (reasoning without message, incomplete tool calls)
-			// - Replaying them can cause API errors (e.g., OpenAI "reasoning without following item")
-			// - The model should retry from the last valid state
-			const assistantMsg = msg as AssistantMessage;
-			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
-				continue;
-			}
 
 			// Track tool calls from this assistant message
-			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
+			const toolCalls = transformedContent.filter((b) => b.type === "toolCall") as ToolCall[];
 			if (toolCalls.length > 0) {
 				pendingToolCalls = toolCalls;
 				existingToolResultIds = new Set();
 			}
 
-			result.push(msg);
-		} else if (msg.role === "toolResult") {
-			existingToolResultIds.add(msg.toolCallId);
-			result.push(msg);
-		} else if (msg.role === "user") {
-			// User message interrupts tool flow - insert synthetic results for orphaned calls
-			if (pendingToolCalls.length > 0) {
-				for (const tc of pendingToolCalls) {
-					if (!existingToolResultIds.has(tc.id)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tc.id,
-							toolName: tc.name,
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-					}
-				}
-				pendingToolCalls = [];
-				existingToolResultIds = new Set();
-			}
-			result.push(msg);
-		} else {
-			result.push(msg);
+			result.push(transformed);
+			continue;
 		}
+
+		// Other message types pass through
+		result.push(msg);
 	}
 
 	return result;

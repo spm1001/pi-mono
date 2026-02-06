@@ -26,8 +26,8 @@ import type {
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { parseStreamingJson } from "../utils/json-parse.js";
+import { tracePhase } from "../utils/perf-trace.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
-
 import { adjustMaxTokensForThinking, buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -217,19 +217,25 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 
 		try {
 			const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? "";
+			const tc0 = performance.now();
 			const { client, isOAuthToken } = createClient(
 				model,
 				apiKey,
 				options?.interleavedThinking ?? true,
 				options?.headers,
 			);
+			tracePhase("createClient", tc0);
+			const tp0 = performance.now();
 			const params = buildParams(model, context, isOAuthToken, options);
+			tracePhase("buildParams", tp0);
 			options?.onPayload?.(params);
 			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
+			// O(1) lookup: map Anthropic's event.index → our content array index
+			const blockIndexMap = new Map<number, number>();
 
 			for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
@@ -251,6 +257,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							index: event.index,
 						};
 						output.content.push(block);
+						blockIndexMap.set(event.index, output.content.length - 1);
 						stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "thinking") {
 						const block: Block = {
@@ -260,6 +267,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							index: event.index,
 						};
 						output.content.push(block);
+						blockIndexMap.set(event.index, output.content.length - 1);
 						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "tool_use") {
 						const block: Block = {
@@ -273,12 +281,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							index: event.index,
 						};
 						output.content.push(block);
+						blockIndexMap.set(event.index, output.content.length - 1);
 						stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
 					}
 				} else if (event.type === "content_block_delta") {
+					const index = blockIndexMap.get(event.index);
+					if (index === undefined) continue;
+					const block = blocks[index];
 					if (event.delta.type === "text_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
 						if (block && block.type === "text") {
 							block.text += event.delta.text;
 							stream.push({
@@ -289,8 +299,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							});
 						}
 					} else if (event.delta.type === "thinking_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
 						if (block && block.type === "thinking") {
 							block.thinking += event.delta.thinking;
 							stream.push({
@@ -301,8 +309,6 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							});
 						}
 					} else if (event.delta.type === "input_json_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
 						if (block && block.type === "toolCall") {
 							block.partialJson += event.delta.partial_json;
 							block.arguments = parseStreamingJson(block.partialJson);
@@ -314,15 +320,14 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 							});
 						}
 					} else if (event.delta.type === "signature_delta") {
-						const index = blocks.findIndex((b) => b.index === event.index);
-						const block = blocks[index];
 						if (block && block.type === "thinking") {
 							block.thinkingSignature = block.thinkingSignature || "";
 							block.thinkingSignature += event.delta.signature;
 						}
 					}
 				} else if (event.type === "content_block_stop") {
-					const index = blocks.findIndex((b) => b.index === event.index);
+					const index = blockIndexMap.get(event.index);
+					if (index === undefined) continue;
 					const block = blocks[index];
 					if (block) {
 						delete (block as any).index;
@@ -471,18 +476,33 @@ function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
 
+// Client cache: reuse Anthropic SDK instances to avoid TLS handshake per request.
+// Keyed by (baseUrl, apiKeyPrefix, isOAuth, interleavedThinking) to allow connection reuse.
+const clientCache = new Map<string, { client: Anthropic; isOAuthToken: boolean }>();
+
 function createClient(
 	model: Model<"anthropic-messages">,
 	apiKey: string,
 	interleavedThinking: boolean,
 	optionsHeaders?: Record<string, string>,
 ): { client: Anthropic; isOAuthToken: boolean } {
+	const oauthToken = isOAuthToken(apiKey);
+
+	// Check cache first (only when no custom per-request headers)
+	const hasCustomHeaders = optionsHeaders && Object.keys(optionsHeaders).length > 0;
+	const cacheKey = `${model.baseUrl}|${apiKey.slice(0, 12)}|${oauthToken}|${interleavedThinking}`;
+	if (!hasCustomHeaders) {
+		const cached = clientCache.get(cacheKey);
+		if (cached) return cached;
+	}
+
 	const betaFeatures = ["fine-grained-tool-streaming-2025-05-14"];
 	if (interleavedThinking) {
 		betaFeatures.push("interleaved-thinking-2025-05-14");
 	}
 
-	const oauthToken = isOAuthToken(apiKey);
+	let result: { client: Anthropic; isOAuthToken: boolean };
+
 	if (oauthToken) {
 		// Stealth mode: Mimic Claude Code's headers exactly
 		const defaultHeaders = mergeHeaders(
@@ -497,35 +517,43 @@ function createClient(
 			optionsHeaders,
 		);
 
-		const client = new Anthropic({
-			apiKey: null,
-			authToken: apiKey,
-			baseURL: model.baseUrl,
-			defaultHeaders,
-			dangerouslyAllowBrowser: true,
-		});
+		result = {
+			client: new Anthropic({
+				apiKey: null,
+				authToken: apiKey,
+				baseURL: model.baseUrl,
+				defaultHeaders,
+				dangerouslyAllowBrowser: true,
+			}),
+			isOAuthToken: true,
+		};
+	} else {
+		const defaultHeaders = mergeHeaders(
+			{
+				accept: "application/json",
+				"anthropic-dangerous-direct-browser-access": "true",
+				"anthropic-beta": betaFeatures.join(","),
+			},
+			model.headers,
+			optionsHeaders,
+		);
 
-		return { client, isOAuthToken: true };
+		result = {
+			client: new Anthropic({
+				apiKey,
+				baseURL: model.baseUrl,
+				dangerouslyAllowBrowser: true,
+				defaultHeaders,
+			}),
+			isOAuthToken: false,
+		};
 	}
 
-	const defaultHeaders = mergeHeaders(
-		{
-			accept: "application/json",
-			"anthropic-dangerous-direct-browser-access": "true",
-			"anthropic-beta": betaFeatures.join(","),
-		},
-		model.headers,
-		optionsHeaders,
-	);
+	if (!hasCustomHeaders) {
+		clientCache.set(cacheKey, result);
+	}
 
-	const client = new Anthropic({
-		apiKey,
-		baseURL: model.baseUrl,
-		dangerouslyAllowBrowser: true,
-		defaultHeaders,
-	});
-
-	return { client, isOAuthToken: false };
+	return result;
 }
 
 function buildParams(
@@ -535,9 +563,12 @@ function buildParams(
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(model.baseUrl, options?.cacheRetention);
+	const cm0 = performance.now();
+	const messages = convertMessages(context.messages, model, isOAuthToken, cacheControl);
+	tracePhase("convertMessages", cm0);
 	const params: MessageCreateParamsStreaming = {
 		model: model.id,
-		messages: convertMessages(context.messages, model, isOAuthToken, cacheControl),
+		messages,
 		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
 		stream: true,
 	};
