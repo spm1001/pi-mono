@@ -8,6 +8,7 @@ import {
 	type Context,
 	EventStream,
 	endTrace,
+	isPerfTraceEnabled,
 	startTrace,
 	streamSimple,
 	type ToolResultMessage,
@@ -236,6 +237,30 @@ async function streamAssistantResponse(
 		messages: llmMessages,
 		tools: context.tools,
 	};
+
+	// Log payload size when tracing is enabled
+	if (isPerfTraceEnabled()) {
+		const sysLen = context.systemPrompt.length;
+		const msgCount = llmMessages.length;
+		const toolCount = context.tools?.length ?? 0;
+		// Rough estimate: count total chars in all messages
+		let msgChars = 0;
+		for (const msg of llmMessages) {
+			if (typeof msg.content === "string") {
+				msgChars += msg.content.length;
+			} else if (Array.isArray(msg.content)) {
+				for (const block of msg.content) {
+					if ("text" in block) msgChars += (block as any).text.length;
+					if ("thinking" in block) msgChars += ((block as any).thinking?.length ?? 0);
+				}
+			}
+		}
+		// Rough token estimate (~4 chars per token)
+		const estTokens = Math.round((sysLen + msgChars) / 4);
+		console.error(
+			`[payload] system=${sysLen}ch messages=${msgCount} tools=${toolCount} msgChars=${msgChars} estTokens=~${estTokens}`,
+		);
+	}
 
 	const httpStart = performance.now();
 	const response = await streamFunction(config.model, llmContext, {
