@@ -69,6 +69,7 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.j
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocation } from "./slash-commands.js";
+import { endPromptTrace, startPromptTrace, tracePromptPhase } from "./prompt-trace.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools } from "./tools/index.js";
@@ -650,6 +651,7 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		startPromptTrace();
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
 		// Handle extension commands first (execute immediately, even during streaming)
@@ -666,11 +668,13 @@ export class AgentSession {
 		let currentText = text;
 		let currentImages = options?.images;
 		if (this._extensionRunner?.hasHandlers("input")) {
+			const t0 = performance.now();
 			const inputResult = await this._extensionRunner.emitInput(
 				currentText,
 				currentImages,
 				options?.source ?? "interactive",
 			);
+			tracePromptPhase("extensionInput", t0);
 			if (inputResult.action === "handled") {
 				return;
 			}
@@ -715,7 +719,9 @@ export class AgentSession {
 		}
 
 		// Validate API key
+		const tApiKey = performance.now();
 		const apiKey = await this._modelRegistry.getApiKey(this.model);
+		tracePromptPhase("validateApiKey", tApiKey);
 		if (!apiKey) {
 			const isOAuth = this._modelRegistry.isUsingOAuth(this.model);
 			if (isOAuth) {
@@ -732,10 +738,12 @@ export class AgentSession {
 		}
 
 		// Check if we need to compact before sending (catches aborted responses)
+		const tCompaction = performance.now();
 		const lastAssistant = this._findLastAssistantMessage();
 		if (lastAssistant) {
 			await this._checkCompaction(lastAssistant, false);
 		}
+		tracePromptPhase("compactionCheck", tCompaction);
 
 		// Build messages array (custom message if any, then user message)
 		const messages: AgentMessage[] = [];
@@ -759,11 +767,13 @@ export class AgentSession {
 
 		// Emit before_agent_start extension event
 		if (this._extensionRunner) {
+			const tExt = performance.now();
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				expandedText,
 				currentImages,
 				this._baseSystemPrompt,
 			);
+			tracePromptPhase("beforeAgentStart", tExt);
 			// Add all custom messages from extensions
 			if (result?.messages) {
 				for (const msg of result.messages) {
@@ -786,6 +796,7 @@ export class AgentSession {
 			}
 		}
 
+		endPromptTrace();
 		await this.agent.prompt(messages);
 		await this.waitForRetry();
 	}

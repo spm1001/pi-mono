@@ -21,13 +21,13 @@
  *   - Runs N iterations to show cold (1st) vs warm (2nd+) performance
  */
 
-import { streamSimple, getModel, type Context, setPerfTraceEnabled, getLastTrace } from "../src/index.js";
+import { type Context, getLastTrace, getModel, setPerfTraceEnabled, streamSimple } from "../src/index.js";
 
 const ITERATIONS = 5;
 const MODEL_PROVIDER = "anthropic";
 const MODEL_ID = "claude-sonnet-4-5-20250929";
 
-async function measureTTFT(context: Context, iteration: number): Promise<{ ttft: number; traceTotal?: number }> {
+async function measureTTFT(context: Context, _iteration: number): Promise<{ ttft: number; traceTotal?: number }> {
 	const model = getModel(MODEL_PROVIDER, MODEL_ID);
 	if (!model) {
 		throw new Error(`Model ${MODEL_ID} not found for provider ${MODEL_PROVIDER}`);
