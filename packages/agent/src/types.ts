@@ -191,4 +191,16 @@ export type AgentEvent =
 	// Tool execution lifecycle
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
 	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean }
+	// Timing events (for performance measurement)
+	| { type: "timing"; label: TimingLabel; ms: number };
+
+/**
+ * Labels for timing events, enabling structured performance analysis.
+ */
+export type TimingLabel =
+	| "api_call_start" // API request initiated
+	| "time_to_first_token" // Time from api_call_start to first streaming event
+	| "api_call_end" // API stream completed
+	| "context_transform" // Time spent in transformContext
+	| "convert_to_llm"; // Time spent in convertToLlm

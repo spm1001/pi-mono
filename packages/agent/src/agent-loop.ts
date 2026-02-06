@@ -211,11 +211,15 @@ async function streamAssistantResponse(
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
+		const transformStart = performance.now();
 		messages = await config.transformContext(messages, signal);
+		stream.push({ type: "timing", label: "context_transform", ms: performance.now() - transformStart });
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+	const convertStart = performance.now();
 	const llmMessages = await config.convertToLlm(messages);
+	stream.push({ type: "timing", label: "convert_to_llm", ms: performance.now() - convertStart });
 
 	// Build LLM context
 	const llmContext: Context = {
@@ -230,6 +234,10 @@ async function streamAssistantResponse(
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
 
+	// Record API call start time
+	const apiCallStart = performance.now();
+	stream.push({ type: "timing", label: "api_call_start", ms: 0 });
+
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
@@ -238,10 +246,16 @@ async function streamAssistantResponse(
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
+	let ttftEmitted = false;
 
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
+				// Emit time-to-first-token on first streaming event
+				if (!ttftEmitted) {
+					stream.push({ type: "timing", label: "time_to_first_token", ms: performance.now() - apiCallStart });
+					ttftEmitted = true;
+				}
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
@@ -270,6 +284,7 @@ async function streamAssistantResponse(
 
 			case "done":
 			case "error": {
+				stream.push({ type: "timing", label: "api_call_end", ms: performance.now() - apiCallStart });
 				const finalMessage = await response.result();
 				if (addedPartial) {
 					context.messages[context.messages.length - 1] = finalMessage;
@@ -285,6 +300,8 @@ async function streamAssistantResponse(
 		}
 	}
 
+	// Fallthrough case (shouldn't normally happen)
+	stream.push({ type: "timing", label: "api_call_end", ms: performance.now() - apiCallStart });
 	return await response.result();
 }
 

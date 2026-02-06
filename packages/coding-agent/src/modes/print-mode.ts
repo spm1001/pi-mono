@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, ImageContent } from "@mariozechner/pi-ai";
 import type { AgentSession } from "../core/agent-session.js";
+import { printTimings } from "../core/timings.js";
 
 /**
  * Options for print mode.
@@ -29,6 +30,14 @@ export interface PrintModeOptions {
  */
 export async function runPrintMode(session: AgentSession, options: PrintModeOptions): Promise<void> {
 	const { mode, messages = [], initialMessage, initialImages } = options;
+
+	// Print startup timings (if PI_TIMING=1)
+	printTimings();
+
+	// Track turn timings for PI_TIMING=1
+	const timingEnabled = process.env.PI_TIMING === "1";
+	const turnTimings = new Map<string, number>();
+
 	if (mode === "json") {
 		const header = session.sessionManager.getHeader();
 		if (header) {
@@ -74,6 +83,30 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		// In JSON mode, output all events
 		if (mode === "json") {
 			console.log(JSON.stringify(event));
+		}
+
+		// Handle timing events
+		if (timingEnabled) {
+			if (event.type === "turn_start") {
+				turnTimings.clear();
+			} else if (event.type === "timing") {
+				turnTimings.set(event.label, event.ms);
+			} else if (event.type === "turn_end" && turnTimings.size > 0) {
+				const ttft = turnTimings.get("time_to_first_token");
+				const apiEnd = turnTimings.get("api_call_end");
+				const convert = turnTimings.get("convert_to_llm");
+				const transform = turnTimings.get("context_transform");
+
+				const parts: string[] = [];
+				if (ttft !== undefined) parts.push(`ttft=${Math.round(ttft)}ms`);
+				if (apiEnd !== undefined) parts.push(`api=${Math.round(apiEnd)}ms`);
+				if (convert !== undefined && convert > 1) parts.push(`convert=${Math.round(convert)}ms`);
+				if (transform !== undefined && transform > 1) parts.push(`transform=${Math.round(transform)}ms`);
+
+				if (parts.length > 0) {
+					console.error(`⏱ ${parts.join(", ")}`);
+				}
+			}
 		}
 	});
 

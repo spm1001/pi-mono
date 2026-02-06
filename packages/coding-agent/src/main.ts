@@ -406,9 +406,11 @@ export async function main(args: string[]) {
 
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
+	time("migrations");
 
 	// First pass: parse args to get --extension paths
 	const firstPass = parseArgs(args);
+	time("parseArgs (first pass)");
 
 	// Early load extensions to discover their CLI flags
 	const cwd = process.cwd();
@@ -456,6 +458,7 @@ export async function main(args: string[]) {
 
 	// Second pass: parse args with extension flags
 	const parsed = parseArgs(args, extensionFlags);
+	time("parseArgs (second pass)");
 
 	// Pass flag values to extensions via runtime
 	for (const [name, value] of parsed.unknownFlags) {
@@ -509,9 +512,11 @@ export async function main(args: string[]) {
 	}
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, settingsManager.getImageAutoResize());
+	time("prepareInitialMessage");
 	const isInteractive = !parsed.print && parsed.mode === undefined;
 	const mode = parsed.mode || "text";
 	initTheme(settingsManager.getTheme(), isInteractive);
+	time("initTheme");
 
 	// Show deprecation warnings in interactive mode
 	if (isInteractive && deprecationWarnings.length > 0) {
@@ -523,9 +528,11 @@ export async function main(args: string[]) {
 	if (modelPatterns && modelPatterns.length > 0) {
 		scopedModels = await resolveModelScope(modelPatterns, modelRegistry);
 	}
+	time("resolveModelScope");
 
 	// Create session manager based on CLI flags
 	let sessionManager = await createSessionManager(parsed, cwd);
+	time("createSessionManager");
 
 	// Handle --resume: show session picker
 	if (parsed.resume) {
@@ -559,6 +566,7 @@ export async function main(args: string[]) {
 	}
 
 	const { session, modelFallbackMessage } = await createAgentSession(sessionOptions);
+	time("createAgentSession");
 
 	if (!isInteractive && !session.model) {
 		console.error(chalk.red("No models available."));

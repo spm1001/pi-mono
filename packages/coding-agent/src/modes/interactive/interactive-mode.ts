@@ -211,6 +211,10 @@ export class InteractiveMode {
 	private retryLoader: Loader | undefined = undefined;
 	private retryEscapeHandler?: () => void;
 
+	// Turn timing state (for PI_TIMING=1 performance visibility)
+	private readonly timingEnabled = process.env.PI_TIMING === "1";
+	private turnTimings: Map<string, number> = new Map();
+
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
 
@@ -2290,6 +2294,40 @@ export class InteractiveMode {
 					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
 				}
 				this.ui.requestRender();
+				break;
+			}
+
+			case "timing": {
+				if (this.timingEnabled) {
+					this.turnTimings.set(event.label, event.ms);
+				}
+				break;
+			}
+
+			case "turn_start": {
+				if (this.timingEnabled) {
+					this.turnTimings.clear();
+				}
+				break;
+			}
+
+			case "turn_end": {
+				if (this.timingEnabled && this.turnTimings.size > 0) {
+					const ttft = this.turnTimings.get("time_to_first_token");
+					const apiEnd = this.turnTimings.get("api_call_end");
+					const convert = this.turnTimings.get("convert_to_llm");
+					const transform = this.turnTimings.get("context_transform");
+
+					const parts: string[] = [];
+					if (ttft !== undefined) parts.push(`ttft=${Math.round(ttft)}ms`);
+					if (apiEnd !== undefined) parts.push(`api=${Math.round(apiEnd)}ms`);
+					if (convert !== undefined && convert > 1) parts.push(`convert=${Math.round(convert)}ms`);
+					if (transform !== undefined && transform > 1) parts.push(`transform=${Math.round(transform)}ms`);
+
+					if (parts.length > 0) {
+						this.showStatus(`⏱ ${parts.join(", ")}`);
+					}
+				}
 				break;
 			}
 		}
