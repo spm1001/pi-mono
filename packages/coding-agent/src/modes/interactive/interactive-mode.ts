@@ -2154,6 +2154,7 @@ export class InteractiveMode {
 						this.getRegisteredToolDefinition(event.toolName),
 						this.ui,
 					);
+					component.setArgsComplete(); // Args are final at execution start
 					component.setExpanded(this.toolOutputExpanded);
 					this.chatContainer.addChild(component);
 					this.pendingTools.set(event.toolCallId, component);
@@ -2507,6 +2508,7 @@ export class InteractiveMode {
 							this.getRegisteredToolDefinition(content.name),
 							this.ui,
 						);
+						component.setArgsComplete(); // Historical — args are already final
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
 

@@ -69,6 +69,7 @@ export class ToolExecutionComponent extends Container {
 	private expanded = false;
 	private showImages: boolean;
 	private isPartial = true;
+	private argsComplete = false;
 	private toolDefinition?: ToolDefinition;
 	private ui: TUI;
 	private cwd: string;
@@ -134,10 +135,13 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * Signal that args are complete (tool is about to execute).
-	 * This triggers diff computation for edit tool.
+	 * This triggers diff computation for edit tool and flushes
+	 * the final display (args were buffered during streaming).
 	 */
 	setArgsComplete(): void {
+		this.argsComplete = true;
 		this.maybeComputeEditDiff();
+		this.updateDisplay();
 	}
 
 	/**
@@ -352,10 +356,17 @@ export class ToolExecutionComponent extends Container {
 		const command = str(this.args?.command);
 		const timeout = this.args?.timeout as number | undefined;
 
-		// Header
+		// Buffer command display during streaming to avoid teletype effect.
+		// Show placeholder until args are complete, then reveal full command atomically.
 		const timeoutSuffix = timeout ? theme.fg("muted", ` (timeout ${timeout}s)`) : "";
 		const commandDisplay =
-			command === null ? theme.fg("error", "[invalid arg]") : command ? command : theme.fg("toolOutput", "...");
+			command === null
+				? theme.fg("error", "[invalid arg]")
+				: !this.argsComplete
+					? theme.fg("toolOutput", "...")
+					: command
+						? command
+						: theme.fg("toolOutput", "...");
 		this.contentBox.addChild(
 			new Text(theme.fg("toolTitle", theme.bold(`$ ${commandDisplay}`)) + timeoutSuffix, 0, 0),
 		);
@@ -455,6 +466,12 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private formatToolExecution(): string {
+		// Buffer all tool displays during streaming — show tool name only until
+		// args are complete, then reveal full call atomically.
+		if (!this.argsComplete && !this.result) {
+			return theme.fg("toolTitle", theme.bold(this.toolName)) + " " + theme.fg("toolOutput", "...");
+		}
+
 		let text = "";
 		const invalidArg = theme.fg("error", "[invalid arg]");
 
