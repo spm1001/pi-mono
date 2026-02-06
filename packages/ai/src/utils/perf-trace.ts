@@ -77,7 +77,7 @@ export function endTrace(): PerfTrace | undefined {
 	if (t.httpToFirstEvent !== undefined) parts.push(`httpToFirst=${t.httpToFirstEvent.toFixed(1)}ms`);
 	if (t.total !== undefined) parts.push(`TOTAL=${t.total.toFixed(1)}ms`);
 
-	console.log(`[perf-trace] ${parts.join(" | ")}`);
+	console.error(`[perf-trace] ${parts.join(" | ")}`);
 
 	return lastTrace;
 }
