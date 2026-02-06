@@ -65,11 +65,11 @@ import {
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
+import { endPromptTrace, startPromptTrace, tracePromptPhase } from "./prompt-trace.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocation } from "./slash-commands.js";
-import { endPromptTrace, startPromptTrace, tracePromptPhase } from "./prompt-trace.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools } from "./tools/index.js";
@@ -707,7 +707,9 @@ export class AgentSession {
 		}
 
 		// Flush any pending bash messages before the new prompt
+		const tFlush = performance.now();
 		this._flushPendingBashMessages();
+		tracePromptPhase("flushBash", tFlush);
 
 		// Validate model
 		if (!this.model) {

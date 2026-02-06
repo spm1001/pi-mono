@@ -21,38 +21,68 @@
  *   - Runs N iterations to show cold (1st) vs warm (2nd+) performance
  */
 
-import { type Context, getLastTrace, getModel, setPerfTraceEnabled, streamSimple } from "../src/index.js";
+import {
+	type Context,
+	endTrace,
+	getLastTrace,
+	getModel,
+	resetTrace,
+	setPerfTraceEnabled,
+	startTrace,
+	streamSimple,
+} from "../src/index.js";
 
 const ITERATIONS = 5;
 const MODEL_PROVIDER = "anthropic";
 const MODEL_ID = "claude-sonnet-4-5-20250929";
 
-async function measureTTFT(context: Context, _iteration: number): Promise<{ ttft: number; traceTotal?: number }> {
+async function measureTTFT(
+	context: Context,
+	_iteration: number,
+): Promise<{ ttft: number; localStart: number; traceTotal?: number }> {
 	const model = getModel(MODEL_PROVIDER, MODEL_ID);
 	if (!model) {
 		throw new Error(`Model ${MODEL_ID} not found for provider ${MODEL_PROVIDER}`);
 	}
 
+	resetTrace();
+	startTrace();
 	const start = performance.now();
 
 	const stream = streamSimple(model, context, {
 		maxTokens: 50, // Keep responses short
 	});
 
-	// Wait for first event (the "start" event = first token)
+	// Wait for first real content from the API (not the locally-emitted "start").
+	// "start" is pushed immediately after client.messages.stream() — before any SSE arrives.
+	// Real TTFT = time to first text_delta, thinking_delta, or text_start from the server.
 	let ttft = 0;
+	let localStart = 0;
+	const eventTypes: string[] = [];
 	for await (const event of stream) {
+		eventTypes.push(event.type);
 		if (event.type === "start") {
+			localStart = performance.now() - start;
+		}
+		if (
+			!ttft &&
+			(event.type === "text_start" ||
+				event.type === "thinking_start" ||
+				event.type === "text_delta" ||
+				event.type === "thinking_delta")
+		) {
 			ttft = performance.now() - start;
-			// Don't break — let the stream complete to avoid connection issues
 		}
 		if (event.type === "done" || event.type === "error") {
+			if (event.type === "error") console.log(`  ERROR: ${JSON.stringify(event)}`);
 			break;
 		}
 	}
+	if (_iteration === 0) console.log(`  Event types: ${eventTypes.join(", ")}`);
 
+	endTrace();
 	const trace = getLastTrace();
-	return { ttft, traceTotal: trace?.total };
+	return { ttft, localStart, traceTotal: trace?.total };
 }
 
 async function main() {
@@ -82,9 +112,11 @@ async function main() {
 	const results: number[] = [];
 
 	for (let i = 0; i < ITERATIONS; i++) {
-		const { ttft } = await measureTTFT(context, i);
+		const { ttft, localStart } = await measureTTFT(context, i);
 		results.push(ttft);
-		console.log(`  Iteration ${i + 1}: TTFT = ${ttft.toFixed(0)}ms ${i === 0 ? "(cold)" : "(warm)"}`);
+		console.log(
+			`  Iteration ${i + 1}: TTFT = ${ttft.toFixed(0)}ms  (local overhead: ${localStart.toFixed(0)}ms) ${i === 0 ? "(cold)" : "(warm)"}`,
+		);
 	}
 
 	console.log("─".repeat(70));

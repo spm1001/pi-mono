@@ -649,8 +649,15 @@ export class ExtensionRunner {
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		const TRACE = process.env.PI_PERF_TRACE === "1" || process.env.PI_PROMPT_TRACE === "1";
 		const ctx = this.createContext();
+
+		const t0 = TRACE ? performance.now() : 0;
 		let currentMessages = structuredClone(messages);
+		if (TRACE) {
+			const cloneMs = performance.now() - t0;
+			console.error(`[ext-trace] structuredClone ${messages.length} messages: ${cloneMs.toFixed(1)}ms`);
+		}
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("context");
@@ -658,8 +665,13 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
+					const th = TRACE ? performance.now() : 0;
 					const event: ContextEvent = { type: "context", messages: currentMessages };
 					const handlerResult = await handler(event, ctx);
+
+					if (TRACE) {
+						console.error(`[ext-trace] context handler (${ext.path}): ${(performance.now() - th).toFixed(1)}ms`);
+					}
 
 					if (handlerResult && (handlerResult as ContextEventResult).messages) {
 						currentMessages = (handlerResult as ContextEventResult).messages!;
@@ -685,6 +697,7 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
+		const TRACE = process.env.PI_PERF_TRACE === "1" || process.env.PI_PROMPT_TRACE === "1";
 		const ctx = this.createContext();
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let currentSystemPrompt = systemPrompt;
@@ -696,6 +709,7 @@ export class ExtensionRunner {
 
 			for (const handler of handlers) {
 				try {
+					const th = TRACE ? performance.now() : 0;
 					const event: BeforeAgentStartEvent = {
 						type: "before_agent_start",
 						prompt,
@@ -703,6 +717,11 @@ export class ExtensionRunner {
 						systemPrompt: currentSystemPrompt,
 					};
 					const handlerResult = await handler(event, ctx);
+					if (TRACE) {
+						console.error(
+							`[ext-trace] before_agent_start (${ext.path}): ${(performance.now() - th).toFixed(1)}ms`,
+						);
+					}
 
 					if (handlerResult) {
 						const result = handlerResult as BeforeAgentStartEventResult;
