@@ -7,8 +7,11 @@ import {
 	type AssistantMessage,
 	type Context,
 	EventStream,
+	endTrace,
+	startTrace,
 	streamSimple,
 	type ToolResultMessage,
+	tracePhase,
 	validateToolArguments,
 } from "@mariozechner/pi-ai";
 import type {
@@ -208,14 +211,24 @@ async function streamAssistantResponse(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	streamFn?: StreamFn,
 ): Promise<AssistantMessage> {
+	startTrace();
+
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
+		const t0 = performance.now();
 		messages = await config.transformContext(messages, signal);
+		tracePhase("transformContext", t0);
 	}
 
-	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
-	const llmMessages = await config.convertToLlm(messages);
+	// Convert messages and resolve API key in parallel (they're independent)
+	const streamFunction = streamFn || streamSimple;
+	const t1 = performance.now();
+	const apiKeyPromise = config.getApiKey
+		? Promise.resolve(config.getApiKey(config.model.provider)).then((key) => key || config.apiKey)
+		: Promise.resolve(config.apiKey);
+	const [llmMessages, resolvedApiKey] = await Promise.all([config.convertToLlm(messages), apiKeyPromise]);
+	tracePhase("convertToLlm", t1);
 
 	// Build LLM context
 	const llmContext: Context = {
@@ -224,12 +237,7 @@ async function streamAssistantResponse(
 		tools: context.tools,
 	};
 
-	const streamFunction = streamFn || streamSimple;
-
-	// Resolve API key (important for expiring tokens)
-	const resolvedApiKey =
-		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
-
+	const httpStart = performance.now();
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
@@ -242,6 +250,8 @@ async function streamAssistantResponse(
 	for await (const event of response) {
 		switch (event.type) {
 			case "start":
+				tracePhase("httpToFirstEvent", httpStart);
+				endTrace();
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
