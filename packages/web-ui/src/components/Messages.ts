@@ -10,7 +10,7 @@ import { html, LitElement, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { renderTool } from "../tools/index.js";
 import type { Attachment } from "../utils/attachment-utils.js";
-import { formatUsage } from "../utils/format.js";
+
 import { i18n } from "../utils/i18n.js";
 import "./ThinkingBlock.js";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -141,13 +141,7 @@ export class AssistantMessage extends LitElement {
 		return html`
 			<div>
 				${orderedParts.length ? html` <div class="px-4 flex flex-col gap-3">${orderedParts}</div> ` : ""}
-				${
-					this.message.usage && !this.isStreaming
-						? this.onCostClick
-							? html` <div class="px-4 mt-2 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors" @click=${this.onCostClick}>${formatUsage(this.message.usage)}</div> `
-							: html` <div class="px-4 mt-2 text-xs text-muted-foreground">${formatUsage(this.message.usage)}</div> `
-						: ""
-				}
+				${"" /* Per-message token stats removed — guéridon uses fuel gauge in stats bar instead */}
 				${
 					this.message.stopReason === "error" && this.message.errorMessage
 						? html`

@@ -154,10 +154,18 @@ export class AgentInterface extends LitElement {
 		this._unsubscribeSession = this.session.subscribe(async (ev: AgentEvent) => {
 			switch (ev.type) {
 				case "message_start":
-				case "message_end":
 				case "turn_start":
 				case "turn_end":
 				case "agent_start":
+					this.requestUpdate();
+					break;
+				case "message_end":
+					// Clear streaming container — completed message is now in
+					// state.messages (rendered by message-list). Without this,
+					// both show it briefly (double render).
+					if (this._streamingContainer) {
+						this._streamingContainer.setMessage(null, true);
+					}
 					this.requestUpdate();
 					break;
 				case "agent_end":
