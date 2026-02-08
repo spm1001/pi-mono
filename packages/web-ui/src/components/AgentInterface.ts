@@ -32,6 +32,9 @@ export class AgentInterface extends LitElement {
 	@property({ attribute: false }) onBeforeToolCall?: (toolName: string, args: any) => boolean | Promise<boolean>;
 	// Optional callback called when cost display is clicked
 	@property({ attribute: false }) onCostClick?: () => void;
+	// Optional custom stats bar renderer — replaces the default token totals display.
+	// Return a Lit TemplateResult to render in the stats bar area.
+	@property({ attribute: false }) customStats?: () => unknown;
 
 	// References
 	@query("message-editor") private _messageEditor!: MessageEditor;
@@ -288,6 +291,10 @@ export class AgentInterface extends LitElement {
 	}
 
 	private renderStats() {
+		if (this.customStats) {
+			return html`<div class="text-xs text-muted-foreground flex justify-between items-center h-5">${this.customStats()}</div>`;
+		}
+
 		if (!this.session) return html`<div class="text-xs h-5"></div>`;
 
 		const state = this.session.state;
